@@ -1,10 +1,11 @@
-"""LangChain v1 agent using filesystem and git MCP servers.
+"""LangChain v1 agent using filesystem and git MCP servers, plus optional Trello API.
 
 This script demonstrates the main lab requirements:
 - connect LangChain to MCP servers
 - load MCP tools
 - create a LangChain agent
 - ask the agent to use filesystem and git capabilities
+- optionally create a Trello demo card with the official Trello REST API
 
 Run:
     python mcp_langchain.py
@@ -13,9 +14,14 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,12 +31,67 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DOCUMENTS_DIR = PROJECT_ROOT / "documents"
+TRELLO_REQUIRED_ENV = (
+    "TRELLO_API_KEY",
+    "TRELLO_TOKEN",
+    "TRELLO_BOARD_ID",
+)
+TRELLO_DEFAULT_LIST_NAME = "MCP Demo"
+TRELLO_DEMO_CARD_NAME = "MCP LangChain demo card"
+TRELLO_DEMO_CARD_DESCRIPTION = (
+    "Created by the MCP in LangChain lab to demonstrate Trello API write capability."
+)
+TRELLO_API_BASE_URL = "https://api.trello.com/1"
+
+
+@dataclass(frozen=True)
+class TrelloConfig:
+    """Trello API settings for the optional write demo."""
+
+    api_key: str
+    token: str
+    board_id: str
+    list_id: str | None
+    list_name: str
 
 
 def require_command(command: str, install_hint: str) -> None:
     """Fail early with a useful message when a local command is missing."""
     if shutil.which(command) is None:
         raise RuntimeError(f"Missing command: {command}. {install_hint}")
+
+
+def get_trello_config() -> TrelloConfig | None:
+    """Return Trello config when the required credentials and board are present."""
+    values = {name: os.getenv(name) for name in TRELLO_REQUIRED_ENV}
+    missing = [name for name, value in values.items() if not value]
+
+    if missing:
+        print(
+            "Trello API demo skipped. To enable it, set all required Trello "
+            f"environment variables. Missing: {', '.join(missing)}",
+            flush=True,
+        )
+        return None
+
+    list_id = os.getenv("TRELLO_LIST_ID") or None
+    list_name = os.getenv("TRELLO_LIST_NAME") or TRELLO_DEFAULT_LIST_NAME
+    if list_id:
+        print("Trello API demo configured for the target Trello list.", flush=True)
+    else:
+        print(
+            "Trello API demo configured. The script will create or reuse a "
+            f"'{list_name}' list for the demo card.",
+            flush=True,
+        )
+
+    return TrelloConfig(
+        api_key=values["TRELLO_API_KEY"] or "",
+        token=values["TRELLO_TOKEN"] or "",
+        board_id=values["TRELLO_BOARD_ID"] or "",
+        list_id=list_id,
+        list_name=list_name,
+    )
 
 
 def build_mcp_client() -> MultiServerMCPClient:
@@ -41,7 +102,7 @@ def build_mcp_client() -> MultiServerMCPClient:
     """
     git_repository = get_git_repository_path()
 
-    # Each entry starts one MCP server. LangChain talks to both servers through
+    # Each entry starts one MCP server. LangChain talks to these servers through
     # stdio and converts their MCP tools into normal LangChain tools.
     return MultiServerMCPClient(
         {
@@ -67,6 +128,121 @@ def build_mcp_client() -> MultiServerMCPClient:
         },
         tool_name_prefix=True,
     )
+
+
+def trello_request(
+    config: TrelloConfig,
+    method: str,
+    path: str,
+    params: dict[str, str] | None = None,
+) -> dict | list:
+    """Call the official Trello REST API without logging secrets."""
+    request_params = {
+        "key": config.api_key,
+        "token": config.token,
+        **(params or {}),
+    }
+    encoded_params = urllib.parse.urlencode(request_params).encode()
+    url = f"{TRELLO_API_BASE_URL}{path}"
+
+    if method == "GET":
+        url = f"{url}?{encoded_params.decode()}"
+        request_data = None
+    else:
+        request_data = encoded_params
+
+    request = urllib.request.Request(
+        url,
+        data=request_data,
+        method=method,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = response.read().decode()
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode(errors="replace")
+        raise RuntimeError(
+            f"Trello API request failed with HTTP {exc.code}: {error_body}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Trello API request failed: {exc.reason}") from exc
+
+    if not data:
+        return {}
+
+    return json.loads(data)
+
+
+def get_or_create_trello_list(config: TrelloConfig) -> dict:
+    """Return the configured Trello list, creating the demo list when needed."""
+    if config.list_id:
+        return {"id": config.list_id, "name": "configured list"}
+
+    board_path = f"/boards/{urllib.parse.quote(config.board_id)}/lists"
+    lists = trello_request(
+        config,
+        "GET",
+        board_path,
+        {
+            "cards": "none",
+            "filter": "open",
+            "fields": "name",
+        },
+    )
+
+    if not isinstance(lists, list):
+        raise RuntimeError("Trello API returned an unexpected response for board lists.")
+
+    for trello_list in lists:
+        if trello_list.get("name") == config.list_name:
+            return trello_list
+
+    created_list = trello_request(
+        config,
+        "POST",
+        "/lists",
+        {
+            "name": config.list_name,
+            "idBoard": config.board_id,
+        },
+    )
+
+    if not isinstance(created_list, dict) or "id" not in created_list:
+        raise RuntimeError("Trello API did not return a list ID after creating a list.")
+
+    return created_list
+
+
+def create_trello_demo_card(config: TrelloConfig) -> None:
+    """Create one real Trello card through the official Trello REST API."""
+    trello_list = get_or_create_trello_list(config)
+    list_id = trello_list["id"]
+    list_name = trello_list.get("name", config.list_name)
+
+    card = trello_request(
+        config,
+        "POST",
+        "/cards",
+        {
+            "idList": list_id,
+            "name": TRELLO_DEMO_CARD_NAME,
+            "desc": TRELLO_DEMO_CARD_DESCRIPTION,
+        },
+    )
+
+    if not isinstance(card, dict) or "id" not in card:
+        raise RuntimeError("Trello API did not return a card ID after creating a card.")
+
+    card_url = card.get("url", "(no URL returned)")
+    print("\nTrello API demo:", flush=True)
+    print(f"- Created card: {card.get('name', TRELLO_DEMO_CARD_NAME)}", flush=True)
+    print(f"- Target list: {list_name}", flush=True)
+    print(f"- Card URL: {card_url}", flush=True)
 
 
 def get_git_repository_path() -> Path:
@@ -171,9 +347,11 @@ async def main() -> None:
     model_name = os.getenv("OPENAI_MODEL", "openai:gpt-4o-mini")
     git_repository = get_git_repository_path()
     validate_git_repository(git_repository)
+
+    trello_config = get_trello_config()
     client = build_mcp_client()
 
-    print("Connecting to MCP servers: filesystem and git", flush=True)
+    print("Connecting to MCP servers: filesystem, git", flush=True)
     tools = await client.get_tools()
 
     # Not every MCP server exposes resources. The lab still demonstrates the
@@ -198,7 +376,7 @@ async def main() -> None:
             source = getattr(resource, "source", "unknown source")
             print(f"- {source}", flush=True)
     else:
-        print("- No resources exposed by the configured filesystem/git servers.", flush=True)
+        print("- No resources exposed by the configured MCP servers.", flush=True)
 
     agent = create_agent(
         model_name,
@@ -220,6 +398,9 @@ async def main() -> None:
 
     for question in questions:
         await ask_agent(agent, question)
+
+    if trello_config:
+        create_trello_demo_card(trello_config)
 
 
 if __name__ == "__main__":
