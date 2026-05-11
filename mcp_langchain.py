@@ -1,11 +1,11 @@
-"""LangChain v1 agent using filesystem and git MCP servers, plus optional Trello API.
+"""LangChain v1 agent using MCP servers, plus optional Trello API comparison.
 
 This script demonstrates the main lab requirements:
 - connect LangChain to MCP servers
 - load MCP tools
 - create a LangChain agent
-- ask the agent to use filesystem and git capabilities
-- optionally create a Trello demo card with the official Trello REST API
+- ask the agent to use filesystem, git, and optional Trello MCP capabilities
+- optionally create Trello demo cards with both Trello MCP and REST API
 
 Run:
     python mcp_langchain.py
@@ -37,16 +37,21 @@ TRELLO_REQUIRED_ENV = (
     "TRELLO_BOARD_ID",
 )
 TRELLO_DEFAULT_LIST_NAME = "MCP Demo"
-TRELLO_DEMO_CARD_NAME = "MCP LangChain demo card"
-TRELLO_DEMO_CARD_DESCRIPTION = (
+TRELLO_MCP_PACKAGE = "@delorenj/mcp-server-trello"
+TRELLO_API_CARD_NAME = "MCP LangChain demo card (REST API)"
+TRELLO_API_CARD_DESCRIPTION = (
     "Created by the MCP in LangChain lab to demonstrate Trello API write capability."
+)
+TRELLO_MCP_CARD_NAME = "MCP LangChain demo card (Trello MCP)"
+TRELLO_MCP_CARD_DESCRIPTION = (
+    "Created by the MCP in LangChain lab to demonstrate Trello MCP write capability."
 )
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 
 
 @dataclass(frozen=True)
 class TrelloConfig:
-    """Trello API settings for the optional write demo."""
+    """Trello settings for the optional MCP vs REST API write comparison."""
 
     api_key: str
     token: str
@@ -68,7 +73,7 @@ def get_trello_config() -> TrelloConfig | None:
 
     if missing:
         print(
-            "Trello API demo skipped. To enable it, set all required Trello "
+            "Trello comparison demo skipped. To enable it, set all required Trello "
             f"environment variables. Missing: {', '.join(missing)}",
             flush=True,
         )
@@ -77,10 +82,10 @@ def get_trello_config() -> TrelloConfig | None:
     list_id = os.getenv("TRELLO_LIST_ID") or None
     list_name = os.getenv("TRELLO_LIST_NAME") or TRELLO_DEFAULT_LIST_NAME
     if list_id:
-        print("Trello API demo configured for the target Trello list.", flush=True)
+        print("Trello comparison demo configured for the target Trello list.", flush=True)
     else:
         print(
-            "Trello API demo configured. The script will create or reuse a "
+            "Trello comparison demo configured. The script will create or reuse a "
             f"'{list_name}' list for the demo card.",
             flush=True,
         )
@@ -94,40 +99,56 @@ def get_trello_config() -> TrelloConfig | None:
     )
 
 
-def build_mcp_client() -> MultiServerMCPClient:
-    """Configure the filesystem and git MCP servers.
+def build_mcp_client(trello_config: TrelloConfig | None = None) -> MultiServerMCPClient:
+    """Configure the filesystem, git, and optional third-party Trello MCP servers.
 
     The filesystem server uses Node/npm through npx.
     The git server uses the Python package mcp-server-git.
+    The optional Trello server uses the third-party @delorenj/mcp-server-trello
+    package through npx for comparison with direct REST API calls.
     """
     git_repository = get_git_repository_path()
 
     # Each entry starts one MCP server. LangChain talks to these servers through
     # stdio and converts their MCP tools into normal LangChain tools.
-    return MultiServerMCPClient(
-        {
-            "filesystem": {
-                "transport": "stdio",
-                "command": "npx",
-                "args": [
-                    "-y",
-                    "@modelcontextprotocol/server-filesystem",
-                    str(DOCUMENTS_DIR),
-                ],
-            },
-            "git": {
-                "transport": "stdio",
-                "command": "python",
-                "args": [
-                    "-m",
-                    "mcp_server_git",
-                    "--repository",
-                    str(git_repository),
-                ],
-            },
+    servers = {
+        "filesystem": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                str(DOCUMENTS_DIR),
+            ],
         },
-        tool_name_prefix=True,
-    )
+        "git": {
+            "transport": "stdio",
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_server_git",
+                "--repository",
+                str(git_repository),
+            ],
+        },
+    }
+
+    if trello_config:
+        servers["trello"] = {
+            "transport": "stdio",
+            "command": "npx",
+            "args": [
+                "-y",
+                TRELLO_MCP_PACKAGE,
+            ],
+            "env": {
+                "TRELLO_API_KEY": trello_config.api_key,
+                "TRELLO_TOKEN": trello_config.token,
+                "TRELLO_BOARD_ID": trello_config.board_id,
+            },
+        }
+
+    return MultiServerMCPClient(servers, tool_name_prefix=True)
 
 
 def trello_request(
@@ -218,9 +239,8 @@ def get_or_create_trello_list(config: TrelloConfig) -> dict:
     return created_list
 
 
-def create_trello_demo_card(config: TrelloConfig) -> None:
+def create_trello_api_demo_card(config: TrelloConfig, trello_list: dict) -> dict:
     """Create one real Trello card through the official Trello REST API."""
-    trello_list = get_or_create_trello_list(config)
     list_id = trello_list["id"]
     list_name = trello_list.get("name", config.list_name)
 
@@ -230,8 +250,8 @@ def create_trello_demo_card(config: TrelloConfig) -> None:
         "/cards",
         {
             "idList": list_id,
-            "name": TRELLO_DEMO_CARD_NAME,
-            "desc": TRELLO_DEMO_CARD_DESCRIPTION,
+            "name": TRELLO_API_CARD_NAME,
+            "desc": TRELLO_API_CARD_DESCRIPTION,
         },
     )
 
@@ -239,10 +259,49 @@ def create_trello_demo_card(config: TrelloConfig) -> None:
         raise RuntimeError("Trello API did not return a card ID after creating a card.")
 
     card_url = card.get("url", "(no URL returned)")
-    print("\nTrello API demo:", flush=True)
-    print(f"- Created card: {card.get('name', TRELLO_DEMO_CARD_NAME)}", flush=True)
+    print("\nTrello REST API demo:", flush=True)
+    print(f"- Created card: {card.get('name', TRELLO_API_CARD_NAME)}", flush=True)
     print(f"- Target list: {list_name}", flush=True)
     print(f"- Card URL: {card_url}", flush=True)
+    return card
+
+
+async def run_trello_mcp_demo(agent, trello_list: dict) -> None:
+    """Ask the agent to create one Trello card through Trello MCP tools."""
+    list_id = trello_list["id"]
+    question = (
+        "Use the Trello MCP tools to create exactly one Trello card in this "
+        f"list ID: {list_id}. Card name: {TRELLO_MCP_CARD_NAME}. "
+        f"Card description: {TRELLO_MCP_CARD_DESCRIPTION}. "
+        "Do not create any extra lists or cards. Mention that you used the "
+        "Trello MCP server, and include the card URL or card ID if the tool "
+        "returns one."
+    )
+    await ask_agent(agent, question)
+
+
+async def run_trello_comparison_demo(agent, config: TrelloConfig) -> None:
+    """Create comparable Trello cards through REST API and Trello MCP."""
+    trello_list = get_or_create_trello_list(config)
+    list_name = trello_list.get("name", config.list_name)
+
+    print("\nTrello MCP vs REST API comparison:", flush=True)
+    print(f"- Third-party Trello MCP package: {TRELLO_MCP_PACKAGE}", flush=True)
+    print("- Direct API: official Atlassian/Trello REST API", flush=True)
+    print(f"- Shared target list: {list_name}", flush=True)
+
+    create_trello_api_demo_card(config, trello_list)
+    await run_trello_mcp_demo(agent, trello_list)
+
+    print("\nTrello comparison summary:", flush=True)
+    print(f"- REST API card: {TRELLO_API_CARD_NAME}", flush=True)
+    print(f"- Trello MCP card: {TRELLO_MCP_CARD_NAME}", flush=True)
+    print(
+        "- Both paths use the same Trello credentials and target list; the REST "
+        "path is explicit Python HTTP code, while the MCP path goes through "
+        "LangChain tools exposed by the third-party MCP server.",
+        flush=True,
+    )
 
 
 def get_git_repository_path() -> Path:
@@ -349,9 +408,13 @@ async def main() -> None:
     validate_git_repository(git_repository)
 
     trello_config = get_trello_config()
-    client = build_mcp_client()
+    client = build_mcp_client(trello_config)
 
-    print("Connecting to MCP servers: filesystem, git", flush=True)
+    configured_servers = "filesystem, git"
+    if trello_config:
+        configured_servers += ", trello"
+
+    print(f"Connecting to MCP servers: {configured_servers}", flush=True)
     tools = await client.get_tools()
 
     # Not every MCP server exposes resources. The lab still demonstrates the
@@ -383,10 +446,11 @@ async def main() -> None:
         tools,
         system_prompt=(
             "You are a practical lab assistant. Use the available MCP tools "
-            "when the user asks about files or git repository information. "
+            "when the user asks about files, git repository information, or Trello. "
             "Keep answers concise and mention which MCP server capability you used. "
             f"The filesystem server is limited to this directory: {DOCUMENTS_DIR}. "
-            f"When using git tools, pass this repo_path value: {git_repository}."
+            f"When using git tools, pass this repo_path value: {git_repository}. "
+            "When asked to create Trello cards, use the Trello MCP tools."
         ),
     )
 
@@ -400,7 +464,7 @@ async def main() -> None:
         await ask_agent(agent, question)
 
     if trello_config:
-        create_trello_demo_card(trello_config)
+        await run_trello_comparison_demo(agent, trello_config)
 
 
 if __name__ == "__main__":

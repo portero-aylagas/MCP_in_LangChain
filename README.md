@@ -1,10 +1,11 @@
 # LangChain v1 MCP Lab
 
-This project demonstrates how to connect a LangChain v1 agent to MCP servers. The agent uses two MCP servers and can optionally create a Trello demo card with the official Trello REST API. Trello is a third-party external app integration for this lab, so use it at your own discretion:
+This project demonstrates how to connect a LangChain v1 agent to MCP servers. The agent uses two MCP servers by default and can optionally compare Trello writes through both a third-party Trello MCP server and the official Trello REST API. Trello is a third-party external app integration for this lab, so use it at your own discretion:
 
 - `filesystem`: reads and lists files from the local `documents/` folder
 - `git`: inspects this lab repository by default, or another Git repository if configured in `.env`
-- `trello REST API`: optionally creates or reuses a demo list, then creates a real demo card when Trello credentials and a board are configured
+- `trello`: optionally uses `@delorenj/mcp-server-trello` through MCP to create one real demo card
+- `trello REST API`: optionally uses official Atlassian/Trello REST endpoints to create one real demo card
 
 The lab follows the current LangChain v1 style with `create_agent` and `MultiServerMCPClient.get_tools()`.
 
@@ -17,7 +18,7 @@ This project satisfies the main lab goals:
 3. Create a LangChain v1 agent.
 4. Use filesystem MCP tools to inspect and read local documents.
 5. Use Git MCP tools to inspect repository status.
-6. Optionally use the official Trello REST API to create or reuse a list and create one real Trello card.
+6. Optionally compare a third-party Trello MCP server with direct official Trello REST API calls.
 7. Check MCP resources and explain when none are exposed by the selected servers.
 
 ## Files
@@ -31,10 +32,11 @@ This project satisfies the main lab goals:
 
 ## How It Works
 
-The script creates one `MultiServerMCPClient` with two MCP server configurations:
+The script creates one `MultiServerMCPClient` with two required MCP server configurations and one optional Trello MCP server configuration:
 
 - The filesystem server is started with `npx -y @modelcontextprotocol/server-filesystem documents/`.
 - The Git server is started with `python -m mcp_server_git --repository <repo_path>`.
+- If Trello credentials are configured, the third-party Trello MCP server is started with `npx -y @delorenj/mcp-server-trello`.
 
 After the MCP servers start, LangChain loads their tools with:
 
@@ -48,11 +50,18 @@ Those tools are passed into a LangChain v1 agent:
 agent = create_agent(model_name, tools, system_prompt=...)
 ```
 
-The agent can then decide when to call filesystem or Git tools to answer user questions.
+The agent can then decide when to call filesystem, Git, or Trello MCP tools to answer user questions.
 
-If Trello credentials are configured, the script separately calls the official Trello REST API after the MCP agent demo. This avoids running a third-party Trello MCP package while still proving external API write capability.
+If Trello credentials are configured, the script also calls the official Trello REST API directly. This creates a side-by-side comparison:
 
-No Trello MCP server is used in this implementation. A third-party package, `@delorenj/mcp-server-trello`, was considered during development, but it is not part of the final code because Trello does not currently provide an official Trello-specific MCP server. The final Trello path uses official Atlassian/Trello REST API endpoints:
+- REST API path: explicit Python HTTP calls to official Atlassian/Trello endpoints.
+- MCP path: LangChain tool calls exposed by the third-party `@delorenj/mcp-server-trello` package.
+
+Trello does not currently provide an official Trello-specific MCP server. The Trello MCP comparison uses this third-party package:
+
+- `@delorenj/mcp-server-trello`: https://github.com/delorenj/mcp-server-trello
+
+The REST API comparison uses these official Atlassian/Trello endpoints:
 
 - `GET /1/boards/{board_id}/lists`
 - `POST /1/lists`
@@ -100,11 +109,11 @@ git config user.name "Your Name"
 git config user.email "you@example.com"
 ```
 
-## Optional Trello API Setup
+## Optional Trello Comparison Setup
 
 Trello is disabled unless the API key, token, and board ID are present in `.env`. This keeps the filesystem and Git lab demos runnable without Trello.
 
-Trello is a third-party app outside this lab and outside the MCP servers used here. Enabling this demo gives the script a write-capable Trello token, so use it at your own discretion. Recommended practice:
+Trello is a third-party app outside this lab, and the Trello MCP server used here is also third-party. Enabling this demo gives both the direct REST API code and the Trello MCP server a write-capable Trello token, so use it at your own discretion. Recommended practice:
 
 - use an empty test board only
 - create a token only for this lab
@@ -119,7 +128,7 @@ TRELLO_TOKEN=your_trello_token_here
 TRELLO_BOARD_ID=your_trello_board_id_here
 ```
 
-When these values are set, the script uses the official Trello REST API to create one real card. Trello cards must live inside lists, so the script first creates or reuses a demo list on the configured board:
+When these values are set, the script creates or reuses a demo list on the configured board. Both comparison paths write to that same list:
 
 ```bash
 TRELLO_LIST_NAME=MCP Demo
@@ -131,11 +140,11 @@ TRELLO_LIST_NAME=MCP Demo
 TRELLO_LIST_ID=your_trello_list_id_here
 ```
 
-The write demo creates:
+The comparison demo creates two real Trello cards:
 
 - list: `TRELLO_LIST_NAME` when `TRELLO_LIST_ID` is not set
-- name: `MCP LangChain demo card`
-- description: `Created by the MCP in LangChain lab to demonstrate Trello API write capability.`
+- REST API card: `MCP LangChain demo card (REST API)`
+- Trello MCP card: `MCP LangChain demo card (Trello MCP)`
 - target list: `TRELLO_LIST_ID`, or the dynamically created/reused demo list
 
 Get a Trello API key from https://trello.com/app-key. Generate a token from that API key with read/write scope, for example by visiting:
@@ -162,13 +171,13 @@ python mcp_langchain.py > demo_output.txt
 
 When the script works, you should see:
 
-- a message saying the Trello API demo was skipped, or a message saying it is configured
-- a connection message for the filesystem and Git MCP servers
-- a list of loaded tools, including names like `filesystem_list_directory` and `git_git_status`
+- a message saying the Trello comparison demo was skipped, or a message saying it is configured
+- a connection message for filesystem/Git, plus Trello when configured
+- a list of loaded tools, including names like `filesystem_list_directory`, `git_git_status`, and Trello tools when configured
 - an answer listing files in `documents/`
 - an answer summarizing `sample_notes.txt`
 - an answer describing the Git repository status
-- when Trello is configured, output confirming the real Trello list/card creation
+- when Trello is configured, output confirming one REST API card and one Trello MCP card
 
 Note: the configured MCP servers mainly expose tools. The script also calls `get_resources()` and prints any resources exposed by the configured servers. If no resources appear, that is a property of these servers, not a LangChain error.
 
@@ -210,7 +219,7 @@ This is an informational message from the filesystem MCP server. The script pass
 
 The selected filesystem and Git MCP servers mainly expose tools. This message does not stop the tool-based demo from working.
 
-### `Trello API demo skipped`
+### `Trello comparison demo skipped`
 
 This is expected unless you want to run the optional Trello write demo. Set `TRELLO_API_KEY`, `TRELLO_TOKEN`, and `TRELLO_BOARD_ID` in `.env` to enable it. `TRELLO_LIST_ID` is optional.
 
@@ -219,7 +228,7 @@ This is expected unless you want to run the optional Trello write demo. Set `TRE
 - LangChain Python MCP docs: https://docs.langchain.com/oss/python/langchain/mcp
 - LangChain MCP adapters reference: https://reference.langchain.com/python/langchain-mcp-adapters/client/MultiServerMCPClient
 - MCP reference servers: https://github.com/modelcontextprotocol/servers
-- Third-party Trello MCP package considered but not used: https://github.com/delorenj/mcp-server-trello
+- Third-party Trello MCP package used for comparison: https://github.com/delorenj/mcp-server-trello
 - Trello REST API introduction: https://developer.atlassian.com/cloud/trello/guides/rest-api/api-introduction/
 - Trello lists API: https://developer.atlassian.com/cloud/trello/rest/api-group-lists/
 - Trello cards API: https://developer.atlassian.com/cloud/trello/rest/api-group-cards/
