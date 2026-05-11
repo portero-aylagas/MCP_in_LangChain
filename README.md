@@ -52,6 +52,12 @@ The agent can then decide when to call filesystem or Git tools to answer user qu
 
 If Trello credentials are configured, the script separately calls the official Trello REST API after the MCP agent demo. This avoids running a third-party Trello MCP package while still proving external API write capability.
 
+No Trello MCP server is used in this implementation. A third-party package, `@delorenj/mcp-server-trello`, was considered during development, but it is not part of the final code because Trello does not currently provide an official Trello-specific MCP server. The final Trello path uses official Atlassian/Trello REST API endpoints:
+
+- `GET /1/boards/{board_id}/lists`
+- `POST /1/lists`
+- `POST /1/cards`
+
 ## Setup
 
 Use Python 3.10 or newer.
@@ -213,6 +219,7 @@ This is expected unless you want to run the optional Trello write demo. Set `TRE
 - LangChain Python MCP docs: https://docs.langchain.com/oss/python/langchain/mcp
 - LangChain MCP adapters reference: https://reference.langchain.com/python/langchain-mcp-adapters/client/MultiServerMCPClient
 - MCP reference servers: https://github.com/modelcontextprotocol/servers
+- Third-party Trello MCP package considered but not used: https://github.com/delorenj/mcp-server-trello
 - Trello REST API introduction: https://developer.atlassian.com/cloud/trello/guides/rest-api/api-introduction/
 - Trello lists API: https://developer.atlassian.com/cloud/trello/rest/api-group-lists/
 - Trello cards API: https://developer.atlassian.com/cloud/trello/rest/api-group-cards/
