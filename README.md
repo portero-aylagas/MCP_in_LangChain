@@ -1,13 +1,15 @@
 # LangChain v1 MCP Lab
 
-This project demonstrates how to connect a LangChain v1 agent to MCP servers. The agent uses two MCP servers by default and can optionally compare Trello writes through both a third-party Trello MCP server and the official Trello REST API. Trello is a third-party external app integration for this lab, so use it at your own discretion:
+This project demonstrates how to connect a LangChain v1 agent to MCP servers. The agent uses two MCP servers by default and can optionally compare Trello writes through both MCP and direct REST API calls. Trello is an external app integration for this lab, so use it at your own discretion:
 
 - `filesystem`: reads and lists files from the local `documents/` folder
 - `git`: inspects this lab repository by default, or another Git repository if configured in `.env`
 - `trello`: optionally uses `@delorenj/mcp-server-trello` through MCP to create one real demo card
-- `trello REST API`: optionally uses official Atlassian/Trello REST endpoints to create one real demo card
+- `trello REST API`: optionally uses official Trello REST endpoints to create one real demo card
 
 The lab follows the current LangChain v1 style with `create_agent` and `MultiServerMCPClient.get_tools()`.
+
+No mock Git or Trello service is implemented. Git is required and fails early if no valid repository is available. Trello is optional; when its environment variables are missing, the Trello demo is skipped, and when they are present, the script writes to real Trello resources with the configured credentials.
 
 ## What This Lab Proves
 
@@ -24,11 +26,14 @@ This project satisfies the main lab goals:
 ## Files
 
 - `mcp_langchain.py`: main Python script for the MCP-enabled LangChain agent
-- `documents/sample_notes.txt`: sample document used by the filesystem MCP server
+- `documents/filesystem_mcp_demo.txt`: small lab fixture used to prove the filesystem MCP server can read real files
+- `documents/assets/trello/`: Trello screenshots embedded in this README
 - `requirements.txt`: Python dependencies
 - `lab_summary.md`: short MCP vs direct API comparison
 - `demo_output.txt`: optional file where terminal output can be saved after running the script
 - `Lab_source/`: original saved lab instructions
+
+The `documents/` folder is intentionally used as the filesystem MCP sandbox. The filesystem server is only allowed to read inside this folder, so `filesystem_mcp_demo.txt` gives the agent a safe file to list, read, and summarize during the lab. The Trello screenshots also live under `documents/assets/` so the repository has one content folder instead of both `documents/` and `docs/`.
 
 ## How It Works
 
@@ -54,14 +59,14 @@ The agent can then decide when to call filesystem, Git, or Trello MCP tools to a
 
 If Trello credentials are configured, the script also calls the official Trello REST API directly. This creates a side-by-side comparison:
 
-- REST API path: explicit Python HTTP calls to official Atlassian/Trello endpoints.
+- REST API path: explicit Python HTTP calls to official Trello endpoints.
 - MCP path: LangChain tool calls exposed by the third-party `@delorenj/mcp-server-trello` package.
 
 Trello does not currently provide an official Trello-specific MCP server. The Trello MCP comparison uses this third-party package:
 
 - `@delorenj/mcp-server-trello`: https://github.com/delorenj/mcp-server-trello
 
-The REST API comparison uses these official Atlassian/Trello endpoints:
+The REST API comparison uses these official Trello endpoints:
 
 - `GET /1/boards/{board_id}/lists`
 - `POST /1/lists`
@@ -113,6 +118,8 @@ git config user.email "you@example.com"
 
 Trello is disabled unless the API key, token, and board ID are present in `.env`. This keeps the filesystem and Git lab demos runnable without Trello.
 
+There is no mocked Trello mode. If Trello is configured, the script creates real Trello cards on the configured board/list. If Trello is not configured, the Trello comparison is skipped.
+
 Trello is a third-party app outside this lab, and the Trello MCP server used here is also third-party. Enabling this demo gives both the direct REST API code and the Trello MCP server a write-capable Trello token, so use it at your own discretion. Recommended practice:
 
 - use an empty test board only
@@ -147,6 +154,18 @@ The comparison demo creates two real Trello cards:
 - Trello MCP card: `MCP LangChain demo card (Trello MCP)`
 - target list: `TRELLO_LIST_ID`, or the dynamically created/reused demo list
 
+Example Trello output from the comparison demo:
+
+![Trello board showing both demo cards](documents/assets/trello/trello-board.png)
+
+REST API-created card:
+
+![Trello card created through the REST API path](documents/assets/trello/trello-api-card.png)
+
+Trello MCP-created card:
+
+![Trello card created through the Trello MCP path](documents/assets/trello/trello-mcp-card.png)
+
 Get a Trello API key from https://trello.com/app-key. Generate a token from that API key with read/write scope, for example by visiting:
 
 ```text
@@ -175,7 +194,7 @@ When the script works, you should see:
 - a connection message for filesystem/Git, plus Trello when configured
 - a list of loaded tools, including names like `filesystem_list_directory`, `git_git_status`, and Trello tools when configured
 - an answer listing files in `documents/`
-- an answer summarizing `sample_notes.txt`
+- an answer summarizing `filesystem_mcp_demo.txt`
 - an answer describing the Git repository status
 - when Trello is configured, output confirming one REST API card and one Trello MCP card
 

@@ -99,8 +99,11 @@ def get_trello_config() -> TrelloConfig | None:
     )
 
 
-def build_mcp_client(trello_config: TrelloConfig | None = None) -> MultiServerMCPClient:
-    """Configure the filesystem, git, and optional third-party Trello MCP servers.
+def build_mcp_client(
+    trello_config: TrelloConfig | None = None,
+    include_core: bool = True,
+) -> MultiServerMCPClient:
+    """Configure filesystem, git, and optional Trello MCP servers.
 
     The filesystem server uses Node/npm through npx.
     The git server uses the Python package mcp-server-git.
@@ -111,27 +114,32 @@ def build_mcp_client(trello_config: TrelloConfig | None = None) -> MultiServerMC
 
     # Each entry starts one MCP server. LangChain talks to these servers through
     # stdio and converts their MCP tools into normal LangChain tools.
-    servers = {
-        "filesystem": {
-            "transport": "stdio",
-            "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                str(DOCUMENTS_DIR),
-            ],
-        },
-        "git": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [
-                "-m",
-                "mcp_server_git",
-                "--repository",
-                str(git_repository),
-            ],
-        },
-    }
+    servers = {}
+
+    if include_core:
+        servers.update(
+            {
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "@modelcontextprotocol/server-filesystem",
+                        str(DOCUMENTS_DIR),
+                    ],
+                },
+                "git": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": [
+                        "-m",
+                        "mcp_server_git",
+                        "--repository",
+                        str(git_repository),
+                    ],
+                },
+            }
+        )
 
     if trello_config:
         servers["trello"] = {
@@ -280,28 +288,42 @@ async def run_trello_mcp_demo(agent, trello_list: dict) -> None:
     await ask_agent(agent, question)
 
 
-async def run_trello_comparison_demo(agent, config: TrelloConfig) -> None:
+async def run_trello_comparison_demo(
+    agent,
+    config: TrelloConfig,
+    trello_mcp_available: bool,
+) -> None:
     """Create comparable Trello cards through REST API and Trello MCP."""
     trello_list = get_or_create_trello_list(config)
     list_name = trello_list.get("name", config.list_name)
 
     print("\nTrello MCP vs REST API comparison:", flush=True)
     print(f"- Third-party Trello MCP package: {TRELLO_MCP_PACKAGE}", flush=True)
-    print("- Direct API: official Atlassian/Trello REST API", flush=True)
+    print("- Direct API: official Trello REST API", flush=True)
     print(f"- Shared target list: {list_name}", flush=True)
 
     create_trello_api_demo_card(config, trello_list)
-    await run_trello_mcp_demo(agent, trello_list)
+    if trello_mcp_available:
+        await run_trello_mcp_demo(agent, trello_list)
+    else:
+        print(
+            "\nTrello MCP demo skipped because the optional Trello MCP server "
+            "did not load. The REST API card was still created.",
+            flush=True,
+        )
 
     print("\nTrello comparison summary:", flush=True)
     print(f"- REST API card: {TRELLO_API_CARD_NAME}", flush=True)
-    print(f"- Trello MCP card: {TRELLO_MCP_CARD_NAME}", flush=True)
-    print(
-        "- Both paths use the same Trello credentials and target list; the REST "
-        "path is explicit Python HTTP code, while the MCP path goes through "
-        "LangChain tools exposed by the third-party MCP server.",
-        flush=True,
-    )
+    if trello_mcp_available:
+        print(f"- Trello MCP card: {TRELLO_MCP_CARD_NAME}", flush=True)
+        print(
+            "- Both paths use the same Trello credentials and target list; the REST "
+            "path is explicit Python HTTP code, while the MCP path goes through "
+            "LangChain tools exposed by the third-party MCP server.",
+            flush=True,
+        )
+    else:
+        print("- Trello MCP card: not created because Trello MCP was unavailable.", flush=True)
 
 
 def get_git_repository_path() -> Path:
@@ -408,14 +430,38 @@ async def main() -> None:
     validate_git_repository(git_repository)
 
     trello_config = get_trello_config()
-    client = build_mcp_client(trello_config)
+
+    print("Connecting to required MCP servers: filesystem, git", flush=True)
+    client = build_mcp_client()
+    tools = await client.get_tools()
+
+    trello_mcp_available = False
+
+    optional_servers = []
+    if trello_config:
+        optional_servers.append("trello")
+        try:
+            trello_client = build_mcp_client(
+                trello_config=trello_config,
+                include_core=False,
+            )
+            trello_tools = await trello_client.get_tools()
+        except Exception as exc:
+            print(
+                "\nOptional Trello MCP server did not load. Trello REST API "
+                f"demo can still run. Error: {exc}",
+                flush=True,
+            )
+        else:
+            tools.extend(trello_tools)
+            trello_mcp_available = True
 
     configured_servers = "filesystem, git"
     if trello_config:
         configured_servers += ", trello"
 
-    print(f"Connecting to MCP servers: {configured_servers}", flush=True)
-    tools = await client.get_tools()
+    if optional_servers:
+        print(f"Configured MCP servers: {configured_servers}", flush=True)
 
     # Not every MCP server exposes resources. The lab still demonstrates the
     # resource access step by checking for them and reporting the result.
@@ -456,7 +502,10 @@ async def main() -> None:
 
     questions = [
         "Use the filesystem tools to list the files available in the documents folder.",
-        "Read sample_notes.txt with the filesystem tools and summarize it in 3 bullet points.",
+        (
+            "Read filesystem_mcp_demo.txt with the filesystem tools and summarize "
+            "it in 3 bullet points."
+        ),
         "Use the git tools to inspect this repository and tell me the current git status.",
     ]
 
@@ -464,7 +513,7 @@ async def main() -> None:
         await ask_agent(agent, question)
 
     if trello_config:
-        await run_trello_comparison_demo(agent, trello_config)
+        await run_trello_comparison_demo(agent, trello_config, trello_mcp_available)
 
 
 if __name__ == "__main__":
