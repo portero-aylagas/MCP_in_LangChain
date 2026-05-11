@@ -1,0 +1,12 @@
+LangChain is a Python framework for building applications with language models.
+Version 1 introduced a simpler agent interface through create_agent.
+
+The Model Context Protocol, usually called MCP, gives AI applications a standard
+way to connect to external tools and data sources. Instead of writing a custom
+integration for every system, an application can connect to MCP servers and load
+their tools.
+
+In this lab, the filesystem MCP server allows the agent to list and read files
+from the documents folder. The git MCP server allows the agent to inspect a Git
+repository. Together, they show how one LangChain agent can use multiple MCP
+servers through a consistent tool interface.

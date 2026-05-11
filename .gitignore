@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.conda/
+.vscode/
+.codex/
+.agents/
+Lab_source/
+Lab_Source/
