@@ -52,7 +52,8 @@ tools = await client.get_tools()
 Those tools are passed into a LangChain v1 agent:
 
 ```python
-agent = create_agent(model_name, tools, system_prompt=...)
+model = init_chat_model(model_name, temperature=0)
+agent = create_agent(model, tools, system_prompt=...)
 ```
 
 The agent can then decide when to call filesystem, Git, or Trello MCP tools to answer user questions.
@@ -89,6 +90,7 @@ Create a `.env` file with your OpenAI API key:
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=openai:gpt-4o-mini
+OPENAI_TEMPERATURE=0
 ```
 
 `MCP_GIT_REPOSITORY` is optional. If it is not set, the script dynamically uses this lab folder as the Git repository. The script intentionally fails fast if neither this lab folder nor the configured path is a valid Git repository, because the Git MCP server cannot start without a real repository.
@@ -197,6 +199,7 @@ When the script works, you should see:
 - an answer summarizing `filesystem_mcp_demo.txt`
 - an answer describing the Git repository status
 - when Trello is configured, output confirming one REST API card and one Trello MCP card
+- a short LLM usage summary with agent call counts
 
 Note: the configured MCP servers mainly expose tools. The script also calls `get_resources()` and prints any resources exposed by the configured servers. If no resources appear, that is a property of these servers, not a LangChain error.
 

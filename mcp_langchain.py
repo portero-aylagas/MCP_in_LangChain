@@ -26,6 +26,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
@@ -47,6 +48,49 @@ TRELLO_MCP_CARD_DESCRIPTION = (
     "Created by the MCP in LangChain lab to demonstrate Trello MCP write capability."
 )
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
+DEFAULT_OPENAI_MODEL = "openai:gpt-4o-mini"
+DEFAULT_OPENAI_TEMPERATURE = 0.0
+
+
+AGENT_SYSTEM_PROMPT_TEMPLATE = """You are a practical lab assistant.
+
+Use the available MCP tools when the user asks about files, git repository
+information, or Trello.
+
+Context:
+- Filesystem MCP directory: {documents_dir}
+- Git MCP repo_path value: {git_repository}
+
+Rules:
+- Keep answers concise.
+- Mention which MCP server capability you used.
+- If a tool fails, briefly report the tool error and do not claim success.
+- When using git tools, pass the repo_path value shown above.
+- When asked to create Trello cards, use the Trello MCP tools.
+"""
+
+LIST_DOCUMENTS_PROMPT = """Use the filesystem MCP tools to list files in the documents folder.
+
+Return:
+- One bullet per file
+- File names only
+- If the folder cannot be read, briefly report the tool error
+"""
+
+SUMMARIZE_DOCUMENT_PROMPT = """Use the filesystem MCP tools to read filesystem_mcp_demo.txt.
+
+Return exactly 3 bullet points summarizing the file.
+If the file cannot be read, briefly report the tool error.
+"""
+
+GIT_STATUS_PROMPT = """Use the git MCP tools to inspect this repository.
+
+Return:
+1. Current branch
+2. Whether the working tree is clean
+3. Modified or untracked files, if any
+If Git status cannot be retrieved, briefly report the tool error.
+"""
 
 
 @dataclass(frozen=True)
@@ -60,10 +104,96 @@ class TrelloConfig:
     list_name: str
 
 
+@dataclass
+class UsageSummary:
+    """Small lab-friendly counter for agent calls."""
+
+    attempted_agent_calls: int = 0
+    completed_agent_calls: int = 0
+    failed_agent_calls: int = 0
+
+    def record_attempt(self) -> None:
+        self.attempted_agent_calls += 1
+
+    def record_success(self) -> None:
+        self.completed_agent_calls += 1
+
+    def record_failure(self) -> None:
+        self.failed_agent_calls += 1
+
+    def print_summary(self) -> None:
+        print("\nLLM usage summary:", flush=True)
+        print(
+            f"- Agent calls attempted: {self.attempted_agent_calls}",
+            flush=True,
+        )
+        print(
+            f"- Agent calls completed: {self.completed_agent_calls}",
+            flush=True,
+        )
+        print(f"- Agent calls failed: {self.failed_agent_calls}", flush=True)
+        print("- Token usage: not tracked", flush=True)
+        print("- Estimated cost: not calculated", flush=True)
+
+
 def require_command(command: str, install_hint: str) -> None:
     """Fail early with a useful message when a local command is missing."""
     if shutil.which(command) is None:
         raise RuntimeError(f"Missing command: {command}. {install_hint}")
+
+
+def get_model_temperature() -> float:
+    """Return the configured LLM temperature for deterministic lab tasks."""
+    raw_temperature = os.getenv("OPENAI_TEMPERATURE")
+    if raw_temperature is None:
+        return DEFAULT_OPENAI_TEMPERATURE
+
+    try:
+        return float(raw_temperature)
+    except ValueError as exc:
+        raise RuntimeError(
+            "OPENAI_TEMPERATURE must be a number, for example 0 or 0.2."
+        ) from exc
+
+
+def build_model(model_name: str):
+    """Create the chat model while keeping the model name configurable."""
+    temperature = get_model_temperature()
+    return init_chat_model(model_name, temperature=temperature)
+
+
+def build_agent_system_prompt(documents_dir: Path, git_repository: Path) -> str:
+    """Build the agent system prompt with clearly separated runtime context."""
+    return AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+        documents_dir=documents_dir,
+        git_repository=git_repository,
+    )
+
+
+def build_trello_mcp_card_prompt(
+    list_id: str,
+    card_name: str,
+    card_description: str,
+) -> str:
+    """Build the Trello card prompt with dynamic values separated from rules."""
+    return f"""Use the Trello MCP tools to create exactly one card.
+
+Target list ID:
+{list_id}
+
+Card name:
+{card_name}
+
+Card description:
+{card_description}
+
+Rules:
+- Do not create any lists.
+- Do not create extra cards.
+- Mention that you used the Trello MCP server.
+- Include the card URL or card ID if the tool returns one.
+- If card creation fails, briefly report the tool error and do not claim success.
+"""
 
 
 def get_trello_config() -> TrelloConfig | None:
@@ -204,7 +334,10 @@ def trello_request(
     if not data:
         return {}
 
-    return json.loads(data)
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Trello API returned malformed JSON.") from exc
 
 
 def get_or_create_trello_list(config: TrelloConfig) -> dict:
@@ -228,7 +361,11 @@ def get_or_create_trello_list(config: TrelloConfig) -> dict:
         raise RuntimeError("Trello API returned an unexpected response for board lists.")
 
     for trello_list in lists:
+        if not isinstance(trello_list, dict):
+            raise RuntimeError("Trello API returned an invalid list entry.")
         if trello_list.get("name") == config.list_name:
+            if "id" not in trello_list:
+                raise RuntimeError("Trello API returned a matching list without an ID.")
             return trello_list
 
     created_list = trello_request(
@@ -249,7 +386,10 @@ def get_or_create_trello_list(config: TrelloConfig) -> dict:
 
 def create_trello_api_demo_card(config: TrelloConfig, trello_list: dict) -> dict:
     """Create one real Trello card through the official Trello REST API."""
-    list_id = trello_list["id"]
+    list_id = trello_list.get("id")
+    if not list_id:
+        raise RuntimeError("Cannot create a Trello card because the list ID is missing.")
+
     list_name = trello_list.get("name", config.list_name)
 
     card = trello_request(
@@ -274,24 +414,29 @@ def create_trello_api_demo_card(config: TrelloConfig, trello_list: dict) -> dict
     return card
 
 
-async def run_trello_mcp_demo(agent, trello_list: dict) -> None:
+async def run_trello_mcp_demo(
+    agent,
+    trello_list: dict,
+    usage_summary: UsageSummary,
+) -> bool:
     """Ask the agent to create one Trello card through Trello MCP tools."""
-    list_id = trello_list["id"]
-    question = (
-        "Use the Trello MCP tools to create exactly one Trello card in this "
-        f"list ID: {list_id}. Card name: {TRELLO_MCP_CARD_NAME}. "
-        f"Card description: {TRELLO_MCP_CARD_DESCRIPTION}. "
-        "Do not create any extra lists or cards. Mention that you used the "
-        "Trello MCP server, and include the card URL or card ID if the tool "
-        "returns one."
+    list_id = trello_list.get("id")
+    if not list_id:
+        raise RuntimeError("Cannot create a Trello MCP card because the list ID is missing.")
+
+    question = build_trello_mcp_card_prompt(
+        list_id=list_id,
+        card_name=TRELLO_MCP_CARD_NAME,
+        card_description=TRELLO_MCP_CARD_DESCRIPTION,
     )
-    await ask_agent(agent, question)
+    return await ask_agent(agent, question, usage_summary)
 
 
 async def run_trello_comparison_demo(
     agent,
     config: TrelloConfig,
     trello_mcp_available: bool,
+    usage_summary: UsageSummary,
 ) -> None:
     """Create comparable Trello cards through REST API and Trello MCP."""
     trello_list = get_or_create_trello_list(config)
@@ -303,8 +448,13 @@ async def run_trello_comparison_demo(
     print(f"- Shared target list: {list_name}", flush=True)
 
     create_trello_api_demo_card(config, trello_list)
+    trello_mcp_created = False
     if trello_mcp_available:
-        await run_trello_mcp_demo(agent, trello_list)
+        trello_mcp_created = await run_trello_mcp_demo(
+            agent,
+            trello_list,
+            usage_summary,
+        )
     else:
         print(
             "\nTrello MCP demo skipped because the optional Trello MCP server "
@@ -314,7 +464,7 @@ async def run_trello_comparison_demo(
 
     print("\nTrello comparison summary:", flush=True)
     print(f"- REST API card: {TRELLO_API_CARD_NAME}", flush=True)
-    if trello_mcp_available:
+    if trello_mcp_created:
         print(f"- Trello MCP card: {TRELLO_MCP_CARD_NAME}", flush=True)
         print(
             "- Both paths use the same Trello credentials and target list; the REST "
@@ -322,6 +472,8 @@ async def run_trello_comparison_demo(
             "LangChain tools exposed by the third-party MCP server.",
             flush=True,
         )
+    elif trello_mcp_available:
+        print("- Trello MCP card: not confirmed because the agent call failed.", flush=True)
     else:
         print("- Trello MCP card: not created because Trello MCP was unavailable.", flush=True)
 
@@ -381,32 +533,51 @@ def validate_git_repository(repo_path: Path) -> None:
 
 def format_final_message(response: dict) -> str:
     """Extract the final assistant message from a LangChain agent response."""
+    if not isinstance(response, dict):
+        return str(response)
+
     messages = response.get("messages", [])
-    if not messages:
+    if not isinstance(messages, list) or not messages:
         return str(response)
 
     final_message = messages[-1]
     content = getattr(final_message, "content", final_message)
+    if isinstance(content, list):
+        return "\n".join(str(item) for item in content)
+
     return str(content)
 
 
-async def ask_agent(agent, question: str) -> None:
+async def ask_agent(
+    agent,
+    question: str,
+    usage_summary: UsageSummary,
+) -> bool:
     """Run one question through the agent and print the final answer."""
     print("\n" + "=" * 80, flush=True)
     print(f"Question: {question}", flush=True)
     print("-" * 80, flush=True)
 
-    response = await agent.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": question,
-                }
-            ]
-        }
-    )
+    usage_summary.record_attempt()
+    try:
+        response = await agent.ainvoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": question,
+                    }
+                ]
+            }
+        )
+    except Exception as exc:
+        usage_summary.record_failure()
+        print(f"Agent call failed: {exc}", flush=True)
+        return False
+
+    usage_summary.record_success()
     print(format_final_message(response), flush=True)
+    return True
 
 
 async def main() -> None:
@@ -425,7 +596,8 @@ async def main() -> None:
     if not DOCUMENTS_DIR.exists():
         raise RuntimeError(f"Missing documents directory: {DOCUMENTS_DIR}")
 
-    model_name = os.getenv("OPENAI_MODEL", "openai:gpt-4o-mini")
+    model_name = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    model = build_model(model_name)
     git_repository = get_git_repository_path()
     validate_git_repository(git_repository)
 
@@ -488,33 +660,38 @@ async def main() -> None:
         print("- No resources exposed by the configured MCP servers.", flush=True)
 
     agent = create_agent(
-        model_name,
+        model,
         tools,
-        system_prompt=(
-            "You are a practical lab assistant. Use the available MCP tools "
-            "when the user asks about files, git repository information, or Trello. "
-            "Keep answers concise and mention which MCP server capability you used. "
-            f"The filesystem server is limited to this directory: {DOCUMENTS_DIR}. "
-            f"When using git tools, pass this repo_path value: {git_repository}. "
-            "When asked to create Trello cards, use the Trello MCP tools."
+        system_prompt=build_agent_system_prompt(
+            documents_dir=DOCUMENTS_DIR,
+            git_repository=git_repository,
         ),
     )
 
     questions = [
-        "Use the filesystem tools to list the files available in the documents folder.",
-        (
-            "Read filesystem_mcp_demo.txt with the filesystem tools and summarize "
-            "it in 3 bullet points."
-        ),
-        "Use the git tools to inspect this repository and tell me the current git status.",
+        LIST_DOCUMENTS_PROMPT,
+        SUMMARIZE_DOCUMENT_PROMPT,
+        GIT_STATUS_PROMPT,
     ]
 
-    for question in questions:
-        await ask_agent(agent, question)
+    usage_summary = UsageSummary()
+    try:
+        for question in questions:
+            await ask_agent(agent, question, usage_summary)
 
-    if trello_config:
-        await run_trello_comparison_demo(agent, trello_config, trello_mcp_available)
+        if trello_config:
+            await run_trello_comparison_demo(
+                agent,
+                trello_config,
+                trello_mcp_available,
+                usage_summary,
+            )
+    finally:
+        usage_summary.print_summary()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except RuntimeError as exc:
+        raise SystemExit(f"Error: {exc}")
