@@ -26,6 +26,7 @@ This project satisfies the main lab goals:
 ## Files
 
 - `mcp_langchain.py`: main Python script for the MCP-enabled LangChain agent
+- `prompts.py`: prompt templates and prompt builder helpers used by the agent
 - `documents/filesystem_mcp_demo.txt`: small lab fixture used to prove the filesystem MCP server can read real files
 - `documents/assets/trello/`: Trello screenshots embedded in this README
 - `requirements.txt`: Python dependencies
@@ -52,7 +53,7 @@ tools = await client.get_tools()
 Those tools are passed into a LangChain v1 agent:
 
 ```python
-model = init_chat_model(model_name, temperature=0)
+model = init_chat_model(model_name)
 agent = create_agent(model, tools, system_prompt=...)
 ```
 
@@ -90,7 +91,6 @@ Create a `.env` file with your OpenAI API key:
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=openai:gpt-4o-mini
-OPENAI_TEMPERATURE=0
 ```
 
 `MCP_GIT_REPOSITORY` is optional. If it is not set, the script dynamically uses this lab folder as the Git repository. The script intentionally fails fast if neither this lab folder nor the configured path is a valid Git repository, because the Git MCP server cannot start without a real repository.

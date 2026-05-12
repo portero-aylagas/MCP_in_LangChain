@@ -29,6 +29,14 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from prompts import (
+    GIT_STATUS_PROMPT,
+    LIST_DOCUMENTS_PROMPT,
+    SUMMARIZE_DOCUMENT_PROMPT,
+    build_agent_system_prompt,
+    build_trello_mcp_card_prompt,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DOCUMENTS_DIR = PROJECT_ROOT / "documents"
@@ -49,48 +57,6 @@ TRELLO_MCP_CARD_DESCRIPTION = (
 )
 TRELLO_API_BASE_URL = "https://api.trello.com/1"
 DEFAULT_OPENAI_MODEL = "openai:gpt-4o-mini"
-DEFAULT_OPENAI_TEMPERATURE = 0.0
-
-
-AGENT_SYSTEM_PROMPT_TEMPLATE = """You are a practical lab assistant.
-
-Use the available MCP tools when the user asks about files, git repository
-information, or Trello.
-
-Context:
-- Filesystem MCP directory: {documents_dir}
-- Git MCP repo_path value: {git_repository}
-
-Rules:
-- Keep answers concise.
-- Mention which MCP server capability you used.
-- If a tool fails, briefly report the tool error and do not claim success.
-- When using git tools, pass the repo_path value shown above.
-- When asked to create Trello cards, use the Trello MCP tools.
-"""
-
-LIST_DOCUMENTS_PROMPT = """Use the filesystem MCP tools to list files in the documents folder.
-
-Return:
-- One bullet per file
-- File names only
-- If the folder cannot be read, briefly report the tool error
-"""
-
-SUMMARIZE_DOCUMENT_PROMPT = """Use the filesystem MCP tools to read filesystem_mcp_demo.txt.
-
-Return exactly 3 bullet points summarizing the file.
-If the file cannot be read, briefly report the tool error.
-"""
-
-GIT_STATUS_PROMPT = """Use the git MCP tools to inspect this repository.
-
-Return:
-1. Current branch
-2. Whether the working tree is clean
-3. Modified or untracked files, if any
-If Git status cannot be retrieved, briefly report the tool error.
-"""
 
 
 @dataclass(frozen=True)
@@ -142,58 +108,9 @@ def require_command(command: str, install_hint: str) -> None:
         raise RuntimeError(f"Missing command: {command}. {install_hint}")
 
 
-def get_model_temperature() -> float:
-    """Return the configured LLM temperature for deterministic lab tasks."""
-    raw_temperature = os.getenv("OPENAI_TEMPERATURE")
-    if raw_temperature is None:
-        return DEFAULT_OPENAI_TEMPERATURE
-
-    try:
-        return float(raw_temperature)
-    except ValueError as exc:
-        raise RuntimeError(
-            "OPENAI_TEMPERATURE must be a number, for example 0 or 0.2."
-        ) from exc
-
-
 def build_model(model_name: str):
     """Create the chat model while keeping the model name configurable."""
-    temperature = get_model_temperature()
-    return init_chat_model(model_name, temperature=temperature)
-
-
-def build_agent_system_prompt(documents_dir: Path, git_repository: Path) -> str:
-    """Build the agent system prompt with clearly separated runtime context."""
-    return AGENT_SYSTEM_PROMPT_TEMPLATE.format(
-        documents_dir=documents_dir,
-        git_repository=git_repository,
-    )
-
-
-def build_trello_mcp_card_prompt(
-    list_id: str,
-    card_name: str,
-    card_description: str,
-) -> str:
-    """Build the Trello card prompt with dynamic values separated from rules."""
-    return f"""Use the Trello MCP tools to create exactly one card.
-
-Target list ID:
-{list_id}
-
-Card name:
-{card_name}
-
-Card description:
-{card_description}
-
-Rules:
-- Do not create any lists.
-- Do not create extra cards.
-- Mention that you used the Trello MCP server.
-- Include the card URL or card ID if the tool returns one.
-- If card creation fails, briefly report the tool error and do not claim success.
-"""
+    return init_chat_model(model_name)
 
 
 def get_trello_config() -> TrelloConfig | None:
